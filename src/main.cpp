@@ -123,23 +123,44 @@ int main(int argc, char *argv[])
 
 void coreRunProcesses(uint8_t core_id, SchedulerData *shared_data)
 {
-    // Work to be done by each core idependent of the other cores
-    // Repeat until all processes in terminated state:
-    //   - *Get process at front of ready queue
-    //   - IF READY QUEUE WAS NOT EMPTY
-    //    - Wait context switching load time
-    //    - Simulate the processes running (i.e. sleep for short bits, e.g. 5 ms, and call the processes `updateProcess()` method)
-    //      until one of the following:
-    //      - CPU burst time has elapsed
-    //      - Interrupted (RR time slice has elapsed or process preempted by higher priority process)
-    //   - Place the process back in the appropriate queue
-    //      - I/O queue if CPU burst finished (and process not finished) -- no actual queue, simply set state to IO
-    //      - Terminated if CPU burst finished and no more bursts remain -- set state to Terminated
-    //      - *Ready queue if interrupted (be sure to modify the CPU burst time to now reflect the remaining time)
-    //   - Wait context switching save time
-    //  - IF READY QUEUE WAS EMPTY
-    //   - Wait short bit (i.e. sleep 5 ms)
-    //  - * = accesses shared data (ready queue), so be sure to use proper synchronization
+    // this pointer is passed from main(locking the mutex manually)
+    std::unique_lock<std::mutex> lock(shared_data->queue_mutex);
+    // now we have the lock, so we can safely access shared data (ready queue)
+    Process *p = nullptr;
+
+    //if ready queue is not empty 
+    if(!shared_data->ready_queue.empty()){
+        //get the process at the front of ready queue
+        p = shared_data->ready_queue.front();
+        //pop the process from the ready queue
+        shared_data->ready_queue.pop_front();
+        p->setState(Process::State::Running, currentTime());
+        p->setCpuCore(core_id);
+        //unlock mutex so other's can access
+        lock.unlock();
+        //sleep for context switch load time
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    if(p != nullptr){
+    //load context switch time
+        std::this_thread::sleep_for(std::chrono::milliseconds(shared_data->context_switch));
+    //check if the queue is empty, if so, wait and check again
+        while(p->getState() == Process::State::Running){
+            //simulate the processes running 
+            p->updateProcess(5);
+            //sleep for 5ms 
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        //save context switch save time
+        std::this_thread::sleep_for(std::chrono::milliseconds(shared_data->context_switch));
+
+        //free up the core 
+        p = nullptr;
+    }
+    else{
+        //queue is empty, check after 5ms
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
 }
 
 void printProcessOutput(std::vector<Process*>& processes)
