@@ -8,6 +8,7 @@
 #include <ncurses.h>
 #include "configreader.h"
 #include "process.h"
+#include <algorithm>
 
 // Shared data for all cores
 typedef struct SchedulerData {
@@ -21,6 +22,7 @@ typedef struct SchedulerData {
 
 void coreRunProcesses(uint8_t core_id, SchedulerData *data);
 void printProcessOutput(std::vector<Process*>& processes);
+void readyProcess(Process* p, SchedulerData* data);
 std::string makeProgressString(double percent, uint32_t width);
 uint64_t currentTime();
 std::string processStateToString(Process::State state);
@@ -60,7 +62,7 @@ int main(int argc, char *argv[])
         // If process should be launched immediately, add to ready queue
         if (p->getState() == Process::State::Ready)
         {
-            shared_data->ready_queue.push_back(p);
+            readyProcess(p, shared_data);
         }
     }
 
@@ -80,15 +82,59 @@ int main(int argc, char *argv[])
     {
         // Do the following:
         //   - Get current time
+        uint32_t curr_time = currentTime();
         //   - *Check if any processes need to move from NotStarted to Ready (based on elapsed time), and if so put that process in the ready queue
         //   - *Check if any processes have finished their I/O burst, and if so put that process back in the ready queue
         //   - *Check if any running process need to be interrupted (RR time slice expires or newly ready process has higher priority)
         //     - NOTE: ensure processes are inserted into the ready queue at the proper position based on algorithm
+
+
+        //check each process for state, if state changes to ready, add to queue with readyProcess() which handles mutual exclusion
+        bool terminated = true;
+        for(Process* p : processes)
+        {
+            switch (p->getState())
+            {
+                case Process::State::NotStarted:
+                    if(curr_time - start >= p->getStartTime())
+                    {
+                        p->setState(Process::State::Ready, curr_time);
+                        readyProcess(p, shared_data);
+                    }
+                    terminated = false;
+                    break;
+                case Process::State::Ready:
+                    if(p->isInterrupted())
+                    {
+                        p->interruptHandled();
+                        readyProcess(p, shared_data);
+                    }
+                    terminated = false;
+                    break;
+                case Process::State::IO:
+                    p->updateProcess(curr_time);
+                    if(p->getState() == Process::State::Ready)
+                    {
+                        readyProcess(p, shared_data);
+                    }
+                    terminated = false;
+                    break;
+                default:
+                    break;
+    
+            }
+        }
         //   - Determine if all processes are in the terminated state
+        shared_data->all_terminated = terminated;
         //   - * = accesses shared data (ready queue), so be sure to use proper synchronization
 
         // Maybe simply print progress bar for all procs?
         printProcessOutput(processes);
+        for(Process* p : shared_data->ready_queue)
+        {
+            printw("%5u, ", p->getPid());
+        }
+        refresh();
 
         // sleep 50 ms
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -99,7 +145,7 @@ int main(int argc, char *argv[])
 
 
     // wait for threads to finish
-    for (i = 0; i < num_cores; i++)
+    for(i = 0; i < num_cores; i++)
     {
         schedule_threads[i].join();
     }
@@ -123,43 +169,110 @@ int main(int argc, char *argv[])
 
 void coreRunProcesses(uint8_t core_id, SchedulerData *shared_data)
 {
-    // this pointer is passed from main(locking the mutex manually)
-    std::unique_lock<std::mutex> lock(shared_data->queue_mutex);
-    // now we have the lock, so we can safely access shared data (ready queue)
-    Process *p = nullptr;
 
-    //if ready queue is not empty 
-    if(!shared_data->ready_queue.empty()){
-        //get the process at the front of ready queue
-        p = shared_data->ready_queue.front();
-        //pop the process from the ready queue
-        shared_data->ready_queue.pop_front();
-        p->setState(Process::State::Running, currentTime());
-        p->setCpuCore(core_id);
-        //unlock mutex so other's can access
-        lock.unlock();
-        //sleep for context switch load time
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    if(p != nullptr){
-    //load context switch time
-        std::this_thread::sleep_for(std::chrono::milliseconds(shared_data->context_switch));
-    //check if the queue is empty, if so, wait and check again
-        while(p->getState() == Process::State::Running){
-            //simulate the processes running 
-            p->updateProcess(5);
-            //sleep for 5ms 
+    while (!(shared_data->all_terminated))
+    {
+        // this pointer is passed from main(locking the mutex manually)
+        std::unique_lock<std::mutex> lock(shared_data->queue_mutex);
+        // now we have the lock, so we can safely access shared data (ready queue)
+        Process *p = nullptr;
+
+        ScheduleAlgorithm algorithm = shared_data->algorithm;
+
+        //if ready queue is not empty 
+        if(!shared_data->ready_queue.empty())
+        {
+            //get the process at the front of ready queue
+            p = shared_data->ready_queue.front();
+            //pop the process from the ready queue
+            shared_data->ready_queue.pop_front();
+            //unlock mutex so other's can access
+            lock.unlock();
+
+            p->setState(Process::State::Running, currentTime());
+            p->setCpuCore(core_id);
+            p->setBurstStartTime(currentTime());
+        }
+
+        if(p != nullptr)
+        {
+            //load context switch time
+            std::this_thread::sleep_for(std::chrono::milliseconds(shared_data->context_switch));
+            //check if the queue is empty, if so, wait and check again
+            while(p->getState() == Process::State::Running)
+            {
+                //simulate the processes running
+                p->updateProcess(currentTime());
+                //check for preemption. Need to lock mutex while accessing ready queue
+                switch(algorithm)
+                {
+                    case ScheduleAlgorithm::PP:
+                        lock.lock();
+                        if(!shared_data->ready_queue.empty() && shared_data->ready_queue.front()->getPriority() > p->getPriority())
+                        {
+                            p->interrupt();
+                            p->updateProcess(currentTime());    
+                        }
+                        lock.unlock();
+                        break;
+                    case ScheduleAlgorithm::RR:
+                        if(currentTime() - p->getBurstStartTime() >= shared_data->time_slice)
+                        {
+                            p->interrupt();
+                            p->updateProcess(currentTime());  
+                        }
+                        break;
+                    default:
+                        break;
+                }
+                //sleep for 5ms 
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            //save context switch save time
+            std::this_thread::sleep_for(std::chrono::milliseconds(shared_data->context_switch));
+
+            //free up the core 
+            p = nullptr;
+        }
+        else
+        {
+            //queue is empty, check after 5ms
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
-        //save context switch save time
-        std::this_thread::sleep_for(std::chrono::milliseconds(shared_data->context_switch));
-
-        //free up the core 
-        p = nullptr;
     }
-    else{
-        //queue is empty, check after 5ms
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+}
+
+void readyProcess(Process* p, SchedulerData* shared_data)
+{
+    std::lock_guard<std::mutex> lock(shared_data->queue_mutex);
+    std::list<Process*>::iterator it;
+    
+    switch(shared_data->algorithm)
+    {   
+        //for shortest job first, loop over queue and insert when remaining time is less
+        case ScheduleAlgorithm::SJF:
+            for(it = shared_data->ready_queue.begin(); it != shared_data->ready_queue.end(); ++it)
+            {
+                if(p->getRemainingTime() < (*it)->getRemainingTime())
+                {
+                    break;
+                }
+            }
+            shared_data->ready_queue.insert(it, p);
+            break;
+        //for preemptive priority, insert when priority is higher
+        case ScheduleAlgorithm::PP:
+            for(it = shared_data->ready_queue.begin(); it != shared_data->ready_queue.end(); ++it)
+            {
+                if(p->getPriority() > (*it)->getPriority())
+                {
+                    break;
+                }
+            }
+            shared_data->ready_queue.insert(it, p);
+            break;
+        default:
+            shared_data->ready_queue.push_back(p);
     }
 }
 
