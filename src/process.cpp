@@ -155,11 +155,14 @@ void Process::updateProcess(uint64_t current_time)
                 {
                     state = State::IO;
                     burst_start_time = current_time;
+                    core = -1;
+                    is_interrupted = false;
                 }
             }
             else if(is_interrupted)
             {
                 state = State::Ready;
+                core = -1;
                 cpu_time += elapsed_time;
                 remain_time -= elapsed_time;
                 updateBurstTime(current_burst, burst_time - elapsed_time);

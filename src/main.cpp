@@ -91,6 +91,8 @@ int main(int argc, char *argv[])
 
         //check each process for state, if state changes to ready, add to queue with readyProcess() which handles mutual exclusion
         bool terminated = true;
+
+        Process* lowest_priority = nullptr;
         for(Process* p : processes)
         {
             switch (p->getState())
@@ -126,13 +128,10 @@ int main(int argc, char *argv[])
                         case ScheduleAlgorithm::PP:
                             if(!shared_data->ready_queue.empty() && shared_data->ready_queue.front()->getPriority() > p->getPriority())
                             {
-                                p->interrupt();
-                                p->updateProcess(currentTime());  
-                                if(p->getState() == Process::State::Ready)
+                                if(lowest_priority == nullptr || lowest_priority->getPriority() > p->getPriority())
                                 {
-                                    readyProcess(p, shared_data);
-                                    p->interruptHandled();
-                                }  
+                                    lowest_priority = p;
+                                }
                             }
                             break;
                         case ScheduleAlgorithm::RR:
@@ -149,6 +148,17 @@ int main(int argc, char *argv[])
                     }
     
             }
+        }
+        
+        if(lowest_priority != nullptr)
+        {
+            lowest_priority->interrupt();
+            lowest_priority->updateProcess(currentTime());  
+            if(lowest_priority->getState() == Process::State::Ready)
+            {
+                readyProcess(lowest_priority, shared_data);
+                lowest_priority->interruptHandled();
+            }  
         }
         //   - Determine if all processes are in the terminated state
         shared_data->all_terminated = terminated;
