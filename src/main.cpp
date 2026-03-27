@@ -119,8 +119,34 @@ int main(int argc, char *argv[])
                     }
                     terminated = false;
                     break;
-                default:
-                    break;
+                case Process::State::Running:
+                    //check for preemption. 
+                    switch(shared_data->algorithm)
+                    {
+                        case ScheduleAlgorithm::PP:
+                            if(!shared_data->ready_queue.empty() && shared_data->ready_queue.front()->getPriority() > p->getPriority())
+                            {
+                                p->interrupt();
+                                p->updateProcess(currentTime());  
+                                if(p->getState() == Process::State::Ready)
+                                {
+                                    readyProcess(p, shared_data);
+                                    p->interruptHandled();
+                                }  
+                            }
+                            break;
+                        case ScheduleAlgorithm::RR:
+                            if(currentTime() - p->getBurstStartTime() >= shared_data->time_slice)
+                            {
+                                p->interrupt();
+                                p->updateProcess(currentTime());  
+                                if(p->getState() == Process::State::Ready)
+                                {
+                                    readyProcess(p, shared_data);
+                                    p->interruptHandled();
+                                }  
+                            }
+                    }
     
             }
         }
@@ -130,12 +156,7 @@ int main(int argc, char *argv[])
 
         // Maybe simply print progress bar for all procs?
         printProcessOutput(processes);
-        for(Process* p : shared_data->ready_queue)
-        {
-            printw("%5u, ", p->getPid());
-        }
-        refresh();
-
+        
         // sleep 50 ms
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
@@ -177,8 +198,6 @@ void coreRunProcesses(uint8_t core_id, SchedulerData *shared_data)
         // now we have the lock, so we can safely access shared data (ready queue)
         Process *p = nullptr;
 
-        ScheduleAlgorithm algorithm = shared_data->algorithm;
-
         //if ready queue is not empty 
         if(!shared_data->ready_queue.empty())
         {
@@ -203,28 +222,6 @@ void coreRunProcesses(uint8_t core_id, SchedulerData *shared_data)
             {
                 //simulate the processes running
                 p->updateProcess(currentTime());
-                //check for preemption. Need to lock mutex while accessing ready queue
-                switch(algorithm)
-                {
-                    case ScheduleAlgorithm::PP:
-                        lock.lock();
-                        if(!shared_data->ready_queue.empty() && shared_data->ready_queue.front()->getPriority() > p->getPriority())
-                        {
-                            p->interrupt();
-                            p->updateProcess(currentTime());    
-                        }
-                        lock.unlock();
-                        break;
-                    case ScheduleAlgorithm::RR:
-                        if(currentTime() - p->getBurstStartTime() >= shared_data->time_slice)
-                        {
-                            p->interrupt();
-                            p->updateProcess(currentTime());  
-                        }
-                        break;
-                    default:
-                        break;
-                }
                 //sleep for 5ms 
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
