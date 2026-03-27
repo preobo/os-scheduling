@@ -145,6 +145,10 @@ void Process::updateProcess(uint64_t current_time)
                     state = State::Terminated;
                     turn_time = current_time - launch_time;
                     wait_time = turn_time - total_time;
+                    for (int i = 1; i < num_bursts; i+=2)
+                    {
+                        wait_time -= burst_times[i];
+                    }
                     core = -1;
                 }
                 else 
