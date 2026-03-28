@@ -167,6 +167,15 @@ void Process::updateProcess(uint64_t current_time)
                 remain_time -= elapsed_time;
                 updateBurstTime(current_burst, burst_time - elapsed_time);
             }
+	    else
+	    {
+	    uint32_t completed_time = 0;
+                for(int i = 0; i < current_burst; i+=2)
+                {
+                    completed_time += burst_times[i];
+                }
+                remain_time = total_time - completed_time - elapsed_time;
+            }
             break;
         case State::IO:
             if(elapsed_time >= burst_time)
