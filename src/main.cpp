@@ -78,6 +78,9 @@ int main(int argc, char *argv[])
 
     // Main thread work goes here
     initscr();
+
+    std::unique_lock<std::mutex> lock(shared_data->queue_mutex, std::defer_lock);
+
     while (!(shared_data->all_terminated))
     {
         // Do the following:
@@ -87,7 +90,8 @@ int main(int argc, char *argv[])
         //   - *Check if all processes are terminated, and if so set shared variable to end scheduling threads  
         //assume all terminated
         shared_data->all_terminated = true; 
-        for(Process* p: processes){
+        for(Process* p: processes)
+        {
             if(p->getState() != Process::State::Terminated){
                 shared_data->all_terminated = false;
                 break;
@@ -96,81 +100,80 @@ int main(int argc, char *argv[])
 
 
         //   - *Check if any processes need to move from NotStarted to Ready (based on elapsed time), and if so put that process in the ready queue
-        for(Process* p: processes){
+        for(Process* p: processes)
+        {
             switch (p->getState())
             {
-            case Process::State::NotStarted:
-            //checking if processes should be launched
-                if(curr_time - start >= p->getStartTime())
+                case Process::State::NotStarted:
+                //checking if processes should be launched
                 //if so, change state to ready and add to queue
-                {p->setState(Process::State::Ready, curr_time);
-                readyProcess(p, shared_data);
-                }
-                break;
-            
-            case Process::State::Ready:
-            //check each process, if state changes to ready, add to queue
-                if(p->isInterrupted())
-                {
-                    p->interruptHandled();
-                    readyProcess(p, shared_data);
-                }
-                break;
-            case Process::State::IO:
-             //   - *Check if any processes have finished their I/O burst, and if so put that process back in the ready queue
-                p->updateProcess(currentTime());
-                //if burst is done, update state to ready and add to queue
-                if(p->getState() == Process::State::Ready){
-                    //if so, change state to ready and add to queue
-                    readyProcess(p, shared_data);
-                }
-                break;
-            
-            case Process::State::Running:
-             //   - *Check if any running process need to be interrupted (RR time slice expires or newly ready process has higher priority)
-                switch(shared_data->algorithm)
-                {
-                    //check if time sleice expired
-                    case ScheduleAlgorithm:: RR:
-                        if(currentTime() - p->getBurstStartTime() >= shared_data->time_slice)
-                        {
-                            p->interrupt();
-                            p->updateProcess(currentTime());
-                            //if process is still ready after update, add back to queue
-                            if(p->getState() == Process::State::Ready)
-                            {
-                                readyProcess(p, shared_data);
-                                p->interruptHandled();
-                            }
-                        }
-                        break;
-                    case ScheduleAlgorithm::PP:
-                        // -*Check for ready process with higher priority
-                        shared_data->queue_mutex.lock();
-                        if(!shared_data->ready_queue.empty() && shared_data->ready_queue.front()->getPriority() < p->getPriority())
-                        {
-                            shared_data->queue_mutex.unlock();
-                            p->interrupt();
-                            p->updateProcess(currentTime());
-                            if(p->getState() == Process::State::Ready)
-                            {
-                                readyProcess(p,shared_data);
-                                p->interruptHandled();
-                            }
-                        }
-                        else{
-                            shared_data->queue_mutex.unlock();
-                        }
-                        break;  
-                    default:
-                        break;
+                    if(curr_time - start >= p->getStartTime())
+                    {
+                        p->setState(Process::State::Ready, curr_time);
+                        readyProcess(p, shared_data);
                     }
                     break;
-                //check if process is terminated, if so, free up core and update state
-                case Process::State::Terminated:
+                
+                case Process::State::Ready:
+                //check each process, if state changes to ready, add to queue
+                    if(p->isInterrupted())
+                    {
+                        p->interruptHandled();
+                        readyProcess(p, shared_data);
+                    }
                     break;
-                }
+                case Process::State::IO:
+                //   - *Check if any processes have finished their I/O burst, and if so put that process back in the ready queue
+                    p->updateProcess(currentTime());
+                    //if burst is done, update state to ready and add to queue
+                    if(p->getState() == Process::State::Ready){
+                        //if so, change state to ready and add to queue
+                        readyProcess(p, shared_data);
+                    }
+                    break;
+                
+                case Process::State::Running:
+                //   - *Check if any running process need to be interrupted (RR time slice expires or newly ready process has higher priority)
+                    switch(shared_data->algorithm)
+                    {
+                        //check if time sleice expired
+                        case ScheduleAlgorithm:: RR:
+                            if(currentTime() - p->getBurstStartTime() >= shared_data->time_slice)
+                            {
+                                p->interrupt();
+                                p->updateProcess(currentTime());
+                                //if process is still ready after update, add back to queue
+                                if(p->getState() == Process::State::Ready)
+                                {
+                                    readyProcess(p, shared_data);
+                                    p->interruptHandled();
+                                }
+                            }
+                            break;
+                        case ScheduleAlgorithm::PP:
+                            // -*Check for ready process with higher priority
+                            lock.lock();
+                            if(!shared_data->ready_queue.empty() && shared_data->ready_queue.front()->getPriority() < p->getPriority())
+                            {
+                                p->interrupt();
+                                p->updateProcess(currentTime());
+                                if(p->getState() == Process::State::Ready)
+                                {
+                                    readyProcess(p,shared_data);
+                                    p->interruptHandled();
+                                }
+                            }
+                            lock.unlock();
+                            break;  
+                        default:
+                            break;
+                    }
+                        break;
+                    //check if process is terminated, if so, free up core and update state
+                    case Process::State::Terminated:
+                        break;
             }
+        }
             //print progress
             printProcessOutput(processes);
             
@@ -179,7 +182,7 @@ int main(int argc, char *argv[])
 
             //clear output
             erase();
-        }
+    }
 
     
     // wait for threads to finish
@@ -197,10 +200,6 @@ int main(int argc, char *argv[])
     //  - Average turnaround time
     //  - Average waiting time
 
-
-    // Clean up before quitting program
-    processes.clear();
-
     //compute final statistics
     double total_cpu_time = 0;
     double total_turnaround = 0;
@@ -211,13 +210,23 @@ int main(int argc, char *argv[])
     //average processes finished in first 50% and second 50%
     std::vector<Process*> sorted = processes;
     std::sort(sorted.begin(), sorted.end(), [](Process* a, Process* b){
-        return a->getTurnaroundTime() < b->getTurnaroundTime();
+        //sort by time of completion, equal to start_time + turn_time
+        return (a->getStartTime()/1000.0 + a->getTurnaroundTime()) < (b->getStartTime()/1000.0 + b->getTurnaroundTime());
     });
 
+    //number of processes
     int n = sorted.size();
-    double throughput_first = 0.0;
-    double throughput_second = 0.0;
-    int half = n / 2;
+    //last process in the first half
+    Process* half = sorted[(n-1)/2];
+    //time for first half in seconds
+    double first_half_time = (half->getStartTime()/1000.0 + half->getTurnaroundTime());
+    //time between end of first half and end of last process in seconds
+    double second_half_time = sim_duration - first_half_time;
+
+
+    double throughput_first = (n+1)/2/first_half_time;
+    double throughput_second = (n-1)/2/second_half_time;
+    double throughput_average = (double) n/sim_duration;
 
     //compute total cpu time, turnaround time, wait time, and throughput for first and second half of processes
     for(int i = 0; i < n; i++)
@@ -225,15 +234,25 @@ int main(int argc, char *argv[])
         total_cpu_time += sorted[i]->getCpuTime();
         total_turnaround += sorted[i]->getTurnaroundTime();
         total_wait += sorted[i]->getWaitTime();
-        if(i < half)
-        {
-            throughput_first += 1.0 / sorted[i]->getTurnaroundTime();
-        }
-        else
-        {
-            throughput_second += 1.0 / sorted[i]->getTurnaroundTime();
-        }
     }
+
+    double cpu_util = total_cpu_time/(sim_duration * num_cores) * 100.0;
+    double avg_wait = total_wait/n;
+    double avg_turn = total_turnaround/n;
+
+    printw("CPU Utilization: %3.1f%% \n", cpu_util);
+    printw("Throughput first half: %.3f \n", throughput_first);
+    printw("Throughput second half: %.3f \n", throughput_second);
+    printw("Throughput average: %3f \n", throughput_average);
+    printw("Average Turnaround Time: %3f seconds\n", avg_turn);
+    printw("Average Wait Time: %3f seconds\n", avg_wait);
+    refresh();
+
+    //sleep for 10 seconds before ncurses clears all the statistics
+    std::this_thread::sleep_for(std::chrono::milliseconds(10000));    
+    // Clean up before quitting program
+    processes.clear();
+    sorted.clear();
     endwin();
 
     return 0;
@@ -242,13 +261,13 @@ int main(int argc, char *argv[])
 void coreRunProcesses(uint8_t core_id, SchedulerData *shared_data)
 {
 
+    // this pointer is passed from main(locking the mutex manually)
+    std::unique_lock<std::mutex> lock(shared_data->queue_mutex, std::defer_lock);
     while (!(shared_data->all_terminated))
     {
-        // this pointer is passed from main(locking the mutex manually)
-        std::unique_lock<std::mutex> lock(shared_data->queue_mutex);
         // now we have the lock, so we can safely access shared data (ready queue)
         Process *p = nullptr;
-
+        lock.lock();
         //if ready queue is not empty 
         if(!shared_data->ready_queue.empty())
         {
@@ -256,13 +275,14 @@ void coreRunProcesses(uint8_t core_id, SchedulerData *shared_data)
             p = shared_data->ready_queue.front();
             //pop the process from the ready queue
             shared_data->ready_queue.pop_front();
-            //unlock mutex so other's can access
-            lock.unlock();
 
             p->setState(Process::State::Running, currentTime());
             p->setCpuCore(core_id);
             p->setBurstStartTime(currentTime());
         }
+
+        //unlock mutex so other's can access
+        lock.unlock();
 
         if(p != nullptr)
         {
@@ -312,7 +332,7 @@ void readyProcess(Process* p, SchedulerData* shared_data)
         case ScheduleAlgorithm::PP:
             for(it = shared_data->ready_queue.begin(); it != shared_data->ready_queue.end(); ++it)
             {
-                if(p->getPriority() > (*it)->getPriority())
+                if(p->getPriority() < (*it)->getPriority())
                 {
                     break;
                 }

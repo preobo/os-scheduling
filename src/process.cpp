@@ -139,7 +139,7 @@ void Process::updateProcess(uint64_t current_time)
             {
                 current_burst++;
                 cpu_time += elapsed_time;
-                remain_time -= burst_time;
+                remain_time = total_time - cpu_time;
                 if(current_burst >= num_bursts)
                 {
                     state = State::Terminated;
@@ -164,17 +164,12 @@ void Process::updateProcess(uint64_t current_time)
                 state = State::Ready;
                 core = -1;
                 cpu_time += elapsed_time;
-                remain_time -= elapsed_time;
+                remain_time = total_time - cpu_time;
                 updateBurstTime(current_burst, burst_time - elapsed_time);
             }
-	    else
-	    {
-	    uint32_t completed_time = 0;
-                for(int i = 0; i < current_burst; i+=2)
-                {
-                    completed_time += burst_times[i];
-                }
-                remain_time = total_time - completed_time - elapsed_time;
+	        else
+	        {
+                remain_time = total_time - cpu_time - elapsed_time;
             }
             break;
         case State::IO:
